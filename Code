@@ -1,0 +1,222 @@
+package com.bolt.dashboard.api;
+
+/**
+ * 
+ */
+import static org.springframework.http.MediaType.APPLICATION_JSON_VALUE;
+import static org.springframework.web.bind.annotation.RequestMethod.GET;
+
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+
+import javax.servlet.http.HttpSession;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.bolt.dashboard.core.ConstantVariable;
+import com.bolt.dashboard.core.config.DataConfig;
+import com.bolt.dashboard.core.model.ALMProject;
+import com.bolt.dashboard.core.model.ConfigurationSetting;
+import com.bolt.dashboard.core.model.ConfigurationToolInfoMetric;
+import com.bolt.dashboard.core.repository.ConfigurationSettingRep;
+import com.bolt.dashboard.response.DataResponse;
+import com.bolt.dashboard.service.ALMToolService;
+
+/**
+ * 
+ * @author nalini.pradhan
+ *
+ */
+@RestController
+public class ALMToolController {
+	private static final Log LOG = LogFactory.getLog(ALMToolController.class);
+	private ALMToolService almService;
+	// AnnotationConfigApplicationContext ctx = null;
+	// ConfigurationSettingRep configurationRepo = null;
+
+	@Autowired
+	public ALMToolController(ALMToolService almService) {
+		this.almService = almService;
+		// ctx = DataConfig.getContext();
+		// configurationRepo = ctx.getBean(ConfigurationSettingRep.class);
+
+	}
+
+	@SuppressWarnings("unchecked")
+	@RequestMapping(value = "/almLastData", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<ALMProject> findLastData(@RequestParam("proName") String[] proName, HttpSession httpSession) {
+		String sessionUI = proName[1];
+		String almType = getAlmType(proName[0]);
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			return almService.searchLastData(almType, proName[0]);
+		} else {
+			LOG.info("No datas are found in db for project  " + proName[0]);
+			return null;
+		}
+
+	}
+
+	@RequestMapping(value = "/getHomepage", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<List<String>> getHomePageData(@RequestParam("proName") String[] proName,
+			HttpSession httpSession) {
+		String sessionUI = proName[1];
+		String almType = getAlmType(proName[0]);
+
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			return almService.getHomepageData(almType, proName[0]);
+		} else {
+			LOG.info("No datas are found in db for project  " + proName[0]);
+			return null;
+		}
+
+	}
+
+	@RequestMapping(value = "/almtfs", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<Iterable<ALMProject>> buildData(@RequestParam("proName") String[] proName,
+			HttpSession httpSession) {
+
+		String sessionUI = proName[1];
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			return almService.search("TFS", proName[0]);
+		} else {
+			LOG.info("No datas are found in db for project  " + proName[0]);
+			return null;
+		}
+
+	}
+
+	@RequestMapping(value = "/almjira", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<Iterable<ALMProject>> almData(@RequestParam("proName") String[] proName,
+			HttpSession httpSession) {
+
+		String sessionUI = proName[1];
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			return almService.search("JIRA", proName[0]);
+		} else {
+			LOG.info("No datas are found in db for project  " + proName[0]);
+			return null;
+		}
+
+	}
+
+	@RequestMapping(value = "/almjiradate", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<Iterable<ALMProject>> almData(@RequestParam("proName") String[] proName,
+			@RequestParam("sDate") long sDate, @RequestParam("eDate") long eDate, @RequestParam("flag") boolean flag) {
+		return almService.search("JIRA", proName[0], sDate, eDate, flag);
+	}
+
+	@RequestMapping(value = "/almJiraSprintData", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<List<ALMProject>> almData(@RequestParam("proName") String[] proName,
+			@RequestParam("sDate") long sDate, @RequestParam("eDate") long eDate, @RequestParam("flag") boolean flag,
+			HttpSession httpSession) {
+		String sessionUI = proName[1];
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			String almType = getAlmType(proName[0]);
+			return almService.searchCurrentSprint(almType, proName[0], sDate, eDate, flag);
+		} else {
+
+			return null;
+		}
+	}
+
+	@RequestMapping(value = "/almKanbanData", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<List<String>> almKanbanData(@RequestParam("proName") String[] proName,
+			HttpSession httpSession) {
+
+		String sessionUI = proName[1];
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+
+			return almService.getHomepageData("JIRA-KANBAN", proName[0]);
+		} else {
+			return null;
+		}
+
+	}
+
+	@RequestMapping(value = "/updateTimeSpent", method = GET, produces = APPLICATION_JSON_VALUE)
+	public long updateWorkLog(@RequestParam("proName") String[] proName, HttpSession httpSession) {
+
+		long status = 200;
+		String sessionUI = proName[3];
+		String jiraId = proName[1];
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			AnnotationConfigApplicationContext ctx = DataConfig.getContext();
+			ConfigurationSettingRep configurationRepo = ctx.getBean(ConfigurationSettingRep.class);
+			ConfigurationSetting configurationColection = configurationRepo.findByProjectName(proName[0]);
+			Set<ConfigurationToolInfoMetric> metric = configurationColection.getMetrics();
+			Iterator iter = metric.iterator();
+			while (iter.hasNext()) {
+				Object configuration1 = iter.next();
+				ConfigurationToolInfoMetric metric1 = (ConfigurationToolInfoMetric) configuration1;
+				if ("Jira".equals(metric1.getToolName()) && metric1.getUrl().toString() != "") {
+
+					String instanceURL = metric1.getUrl() + "/rest/api/2/issue/" + jiraId
+							+ "/worklog?adjustEstimate=auto";
+					String user = metric1.getUserName();
+					String pass = metric1.getPassword();
+					try {
+						almService.updateTimeSpentFromRestApi(instanceURL, user, pass, proName[2]);
+						return status;
+					} catch (Exception e) {
+						status = 400;
+						LOG.info(e);
+					}
+					break;
+
+				}
+
+			}
+		} else {
+			status = 400;
+		}
+		return status;
+
+	}
+
+	@RequestMapping(value = "/getDefectData", method = GET, produces = APPLICATION_JSON_VALUE)
+	public DataResponse<List<String>> getDefectData(@RequestParam("proName") String[] proName,
+			HttpSession httpSession) {
+		String sessionUI = proName[1];
+		String almType = "JIRA DEFECTS";
+
+		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+			return almService.getHomepageData(almType, proName[0]);
+		} else {
+			LOG.info("No datas are found in db for project  " + proName[0]);
+			return null;
+		}
+	}
+
+	public String getAlmType(String projectName) {
+		String almType = "";
+		AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(DataConfig.class);
+		ConfigurationSettingRep configurationRepo = context.getBean(ConfigurationSettingRep.class);
+		ConfigurationSetting configurationColection = configurationRepo.findByProjectName(projectName);
+		Set<ConfigurationToolInfoMetric> metric = configurationColection.getMetrics();
+		Iterator iter = metric.iterator();
+		while (iter.hasNext()) {
+			Object configuration1 = iter.next();
+			ConfigurationToolInfoMetric metric1 = (ConfigurationToolInfoMetric) configuration1;
+
+			if ("Jira".equals(metric1.getToolName())
+					|| ("Jira Defects".equals(metric1.getToolName()) && metric1.getUrl() == "")) {
+				almType = "JIRA";
+				break;
+			} else if ("TFS ALM".equals(metric1.getToolName())) {
+				almType = "TFS";
+				break;
+			}
+
+		}
+		context.close();
+		return almType;
+
+	}
+}
