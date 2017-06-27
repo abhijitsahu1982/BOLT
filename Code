@@ -1,222 +1,951 @@
-package com.bolt.dashboard.api;
+"use strict";
+angular.module('bolt-dashboard').directive('jiraAlm', ['almData', 'core', 'apiDataGetterSetter', 'commonFunction', 'modalCloseFactory', 'commonCharts', 'almconfigData', function(almData, core, apiDataGetterSetter, commonFunction, modalCloseFactory, commonCharts, almconfigData) {
+    return {
+        scope: {},
+        templateUrl: 'app/dashboard/widgets/jiraAlm/jiraAlm.html',
+        link: function(scope) {
+            var name = commonFunction.projectName;
+            if (!apiDataGetterSetter.getData("almConfigData" + name)) {
+                almconfigData.almconfigGet(name).then(function(response) {
+                    scope.almConfig = response.data.result;
+                });
+            } else {
+                scope.almConfig = apiDataGetterSetter.getData("almConfigData" + name).data.result;
+            }
+            var endDate = Math.floor(moment(new Date()).endOf('day').add(1, 'day')),
+                startDate = scope.$root.sprintStartDateLong,
+                lineChartCategories = [],
+                lineChartAverageCycleTimeData = [],
+                lineChartAverageWaitTimeData = [],
+                StoryCompletedPerSpt = [],
+                StoryPointsPerSpt = [],
+                timeArray = ["waitTime", "cycleTime", "leadTime"],
+                completedTasksTotalCycleTime = 0,
+                completedTasksTotalLeadTime = 0,
+                completedTasksTotalWaitTime = 0,
 
-/**
- * 
- */
-import static org.springframework.http.MediaType.APPLICATION_JSON_VALUE;
-import static org.springframework.web.bind.annotation.RequestMethod.GET;
+                params = {
+                    proName: [name],
+                    sDate: [startDate],
+                    eDate: [endDate],
+                    flag: ['true']
+                },
+                almdataparams = {
+                    proName: [name]
+                },
+                min = Math.floor(moment(new Date()).subtract(10, 'day')),
+                allDefects = [],
 
-import java.util.Iterator;
-import java.util.List;
-import java.util.Set;
 
-import javax.servlet.http.HttpSession;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
 
-import com.bolt.dashboard.core.ConstantVariable;
-import com.bolt.dashboard.core.config.DataConfig;
-import com.bolt.dashboard.core.model.ALMProject;
-import com.bolt.dashboard.core.model.ConfigurationSetting;
-import com.bolt.dashboard.core.model.ConfigurationToolInfoMetric;
-import com.bolt.dashboard.core.repository.ConfigurationSettingRep;
-import com.bolt.dashboard.response.DataResponse;
-import com.bolt.dashboard.service.ALMToolService;
+                chartDataBurnDownRemaining = [],
+                chartDataBurnDownSpent = [],
+                chartIdeal = [],
+                remainingPrediction = [],
+                original = 0,
+                chartDataCommitted = [],
+                chartDataCompleted = [],
+                chartDataEffort = [],
+                chartDataDefects = [],
+                chartDataCapacity = [],
+                catagories = [],
+                currenSprintPlannedSP = 0,
+                currentSprintCompletedSP = 0,
+                productBackLogFlag = false;
+            scope.baseline = false;
+            scope.temporary = 0;
+            scope.definitions = core.getDefinition();
+            scope.currentSprint = localStorage.getItem("selectedSprint" + name);
+            /* Get the data from service. */
+            var retrievedObject = apiDataGetterSetter.getData('almResponse' + name);
+            var retrievedAlmDataObject = apiDataGetterSetter.getData('almLastData' + name);
+            if (!retrievedObject || retrievedObject.data === "") {
+                almData.almJiraDetails(params).then(function(response) {
+                    scope.response = response;
+                    apiDataGetterSetter.setData('almResponse' + name, response);
+                    processResponse(response);
+                });
+            } else {
+                scope.response = retrievedObject;
+                processResponse(retrievedObject);
+            }
 
-/**
- * 
- * @author nalini.pradhan
- *
- */
-@RestController
-public class ALMToolController {
-	private static final Log LOG = LogFactory.getLog(ALMToolController.class);
-	private ALMToolService almService;
-	// AnnotationConfigApplicationContext ctx = null;
-	// ConfigurationSettingRep configurationRepo = null;
+            function getDataForSprintWiseTimeTrend(wholeData) {
+                scope.sprintWiseCycleTime = [];
+                _.each(wholeData, function(element) {
+                    var data = core.getAverageCycleTimeForEachSprint(element);
+                    lineChartCategories.push(data.name);
+                    lineChartAverageCycleTimeData.push(data.value);
+                    scope.sprintWiseCycleTime.push(data);
+                    var waitTime = core.getAverageWaitTimeForEachSprint(element);
+                    lineChartAverageWaitTimeData.push(waitTime.value);
+                });
+                var sprintWiseLineChartSeries = [{
+                    name: 'Average Cycle Time',
+                    data: lineChartAverageCycleTimeData
+                }, {
+                    name: 'Average Wait Time',
+                    data: lineChartAverageWaitTimeData
+                }];
+                commonCharts.drawLineChart('#sprintWiseCycleTime', '', 'Average Time(hours)', sprintWiseLineChartSeries, lineChartCategories);
+            }
+            scope.calculateFutureSP = function(value, NextSprintNumber) {
+                if (NextSprintNumber === '0') {
+                    scope.capacity = parseInt(value);
+                } else {
+                    scope.capacity1 = parseInt(value);
+                }
+                scope.startCount = -1;
+                scope.endCount = -1;
+                scope.previousEnabled = true;
+                scope.nextEnabled = false;
+                populateData(scope.dataForPopulation, false, false);
+                if (NextSprintNumber === '0') {
+                    scope.futureSP = Math.floor(scope.effortPerStoryPoint * scope.capacity);
+                } else {
+                    scope.futureSP1 = Math.floor(scope.effortPerStoryPoint1 * scope.capacity1);
+                    scope.futureASP1 = Math.floor(scope.futureSP1 * scope.efficiency1 / 100);
+                }
+                var chart = $('#containerALM').highcharts();
+                chart.series[0].setData(chartDataCommitted, false);
+                chart.series[1].setData(chartDataCompleted, false);
+                chart.series[2].setData(chartDataDefects, false);
+                chart.series[3].setData(chartDataCapacity, false);
+                chart.series[4].setData(chartDataEffort, false);
+                chart.redraw();
+            };
+            scope.previous = function() {
+                populateData(scope.dataForPopulation, true, false);
+            };
+            scope.next = function() {
+                populateData(scope.dataForPopulation, true, true);
+            };
 
-	@Autowired
-	public ALMToolController(ALMToolService almService) {
-		this.almService = almService;
-		// ctx = DataConfig.getContext();
-		// configurationRepo = ctx.getBean(ConfigurationSettingRep.class);
+            function populateData(data, refreshFlag, next) {
+                scope.showMonteCarloSection = false;
+                if (data.length - 1 >= 5) {
+                    scope.showMonteCarloSection = true;
+                }
+                var completedStoryPoints = 0,
+                    plannedStoryPoints = 0,
+                    totalCapacity = 0,
+                    capacityPerSprint = 0,
+                    currentSprintBugs;
+                chartDataCommitted = [];
+                chartDataCompleted = [];
+                chartDataEffort = [];
+                chartDataDefects = [];
+                chartDataCapacity = [];
+                catagories = [];
+                data = _.filter(data, function(o) {
+                    return o.iterationName !== 'BackLog' && o.startDate !== 0;
+                });
+                var startCount = 0;
+                var endCount = 0;
+                var minNumber = 6;
+                if (data.length <= minNumber) {
+                    startCount = 0;
+                    endCount = data.length;
+                    scope.previousEnabled = false;
+                    scope.nextEnabled = false;
+                }
+                if ((scope.startCount === -1 && data.length > minNumber)) {
+                    startCount = data.length - minNumber;
+                    endCount = data.length;
+                    scope.startCount = startCount;
+                    scope.endCount = endCount;
+                } else if (data.length > minNumber && scope.startCount !== -1 && !next) {
+                    if (scope.startCount - minNumber < 0) {
+                        startCount = 0;
+                        endCount = minNumber;
+                        scope.startCount = 0;
+                        scope.endCount = endCount;
+                        scope.previousEnabled = false;
+                        scope.nextEnabled = true;
+                    } else {
+                        startCount = scope.startCount - minNumber;
+                        endCount = startCount + minNumber;
+                        scope.startCount = startCount;
+                        scope.endCount = endCount;
+                        scope.previousEnabled = true;
+                        scope.nextEnabled = true;
+                    }
+                } else if (data.length > minNumber && scope.startCount !== -1 && next) {
+                    if (scope.endCount + minNumber < data.length) {
+                        startCount = scope.endCount;
+                        endCount = scope.endCount + minNumber;
+                        scope.startCount = startCount;
+                        scope.endCount = endCount;
+                        scope.previousEnabled = true;
+                        scope.nextEnabled = true;
+                    } else {
+                        startCount = data.length - minNumber;
+                        endCount = data.length;
+                        scope.startCount = startCount;
+                        scope.endCount = endCount;
+                        scope.previousEnabled = true;
+                        scope.nextEnabled = false;
+                    }
+                }
+                /*Loop Start */
+                _.each(data, function(item, index) {
+                    if (index >= startCount && index < endCount) {
+                        var totalStoryPoints = 0,
+                            totalCompletedStoryPoints = 0,
+                            actualEffort = 0;
+                        if (index === startCount) {
+                            scope.startName = item.iterationName;
+                        } else if (index === (endCount - 1)) {
+                            scope.endName = item.iterationName;
+                        }
+                        currentSprintBugs = _.filter(item.metrics, function(o) {
+                            return (scope.almConfig.closeState.indexOf(o.state) > -1) && o.nameALMProperty === scope.almConfig.defectName;
+                        });
+                        _.each(currentSprintBugs, function(element) {
+                            allDefects.push(element);
+                        });
+                        _.each(item.metrics, function(element) {
+                            if (element.nameALMProperty === 'Story') {
+                                totalStoryPoints += element.storyPoints;
+                                if (element.state === 'Done' || element.state === 'Closed' || element.state === 'Resolved') {
+                                    totalCompletedStoryPoints += element.storyPoints;
+                                }
+                            } else if (element.nameALMProperty === 'Product Backlog Item') {
+                                productBackLogFlag = true;
+                                if (!angular.isUndefined(element.effort)) {
+                                    totalStoryPoints += element.effort;
+                                    if (element.state === 'Done' || element.state === 'Closed' || element.state === 'Resolved') {
+                                        totalCompletedStoryPoints += element.effort;
+                                    }
+                                }
+                            } else if (element.nameALMProperty === 'Task' || element.nameALMProperty === 'Sub-task') {
+                                if (element.effort === undefined) {
+                                    actualEffort += 0;
+                                } else {
+                                    actualEffort += element.effort;
+                                }
+                            }
+                        });
+                        StoryCompletedPerSpt[endCount - index - 1] = totalCompletedStoryPoints;
+                        StoryPointsPerSpt[endCount - index - 1] = totalStoryPoints;
+                        completedStoryPoints += totalCompletedStoryPoints;
+                        plannedStoryPoints += totalStoryPoints;
+                        if (index === data.length - 1) {
+                            currenSprintPlannedSP = totalStoryPoints;
+                            currentSprintCompletedSP = totalCompletedStoryPoints;
+                            currentSprintBugs = _.filter(item.metrics, function(o) {
+                                return o.nameALMProperty === scope.almConfig.defectName && Math.floor(moment(o.resolutionDate).endOf('day').diff(moment(item.startDate).endOf('day'), 'days')) > -1 && Math.floor(moment(o.resolutionDate).endOf('day').diff(moment(new Date()).endOf('day'), 'days')) <= 0;
+                            });
+                        } else {
+                            currentSprintBugs = _.filter(item.metrics, function(o) {
+                                return o.nameALMProperty === scope.almConfig.defectName && Math.floor(moment(o.resolutionDate).endOf('day').diff(moment(item.startDate).endOf('day'), 'days')) > -1 && Math.floor(moment(o.resolutionDate).endOf('day').diff(moment(item.endDate).endOf('day'), 'days')) < -1;
+                            });
+                        }
+                        var tasks = _.filter(item.metrics, function(o) {
+                            return (scope.almConfig.taskName.indexOf(o.nameALMProperty) > -1);
+                        });
+                        var groupedDataTask = _(tasks).sortBy('assginedTo').groupBy(function(o) {
+                            return o.assginedTo;
+                        }).forEach(function(group) {
+                            return group;
+                        });
+                        capacityPerSprint = 10 * 6.5 * _.keys(groupedDataTask).length;
+                        totalCapacity += capacityPerSprint;
+                        catagories.push(item.iterationName);
+                        chartDataCommitted.push(totalStoryPoints);
+                        chartDataCompleted.push(totalCompletedStoryPoints);
+                        if (index === data.length - 1) {
+                            chartDataEffort.push(null);
+                        } else {
+                            chartDataEffort.push(Math.floor(actualEffort / 3600));
+                        }
+                        chartDataCapacity.push(Math.floor(capacityPerSprint));
+                        chartDataDefects.push(currentSprintBugs.length);
+                        if (item.iterationName === localStorage.getItem("currentSprint" + name)) {
+                            min = item.startDate;
+                            scope.remainingDays = Math.floor(moment(item.endDate).endOf('day').diff(moment(new Date()).endOf('day'), 'days'));
+                        }
+                    }
+                });
+                /*Loop End */
+                completedStoryPoints -= currentSprintCompletedSP;
+                plannedStoryPoints -= currenSprintPlannedSP;
+                if (data.length - startCount - 1 > 0) {
+                    scope.averageVelocity = Math.floor(completedStoryPoints / (data.length - startCount - 1));
+                }
+                var averageCapacity = Math.floor(totalCapacity / (data.length - startCount - 1));
+                if (refreshFlag) {
+                    scope.capacity = averageCapacity;
+                    scope.capacity1 = scope.capacity;
+                }
+                /*------------------------Monte Carlo For What If Analysis--------------------------------*/
+                var sumSP = 0;
+                var sumASP = 0;
+                var randomSelection = 0;
+                var randomSelectionSum = 0;
+                var newRandomSelection = 0;
+                var newStoryCompletedPerSprint = [];
+                var newStoryPointsPerSpt = [];
+                for (var i = 0; i < 1000; i++) {
+                    randomSelectionSum = 0;
+                    newRandomSelection = 0;
+                    for (var j = 0; j < 5; j++) {
+                        randomSelection = Math.floor(Math.random() * StoryPointsPerSpt.length);
+                        randomSelectionSum = randomSelectionSum + StoryPointsPerSpt[randomSelection];
+                    }
+                    newStoryPointsPerSpt[i] = randomSelectionSum / 5;
+                    StoryCompletedPerSpt[StoryCompletedPerSpt.length] = newStoryPointsPerSpt[i];
+                    for (var k = 0; k < 5; k++) {
+                        randomSelection = Math.floor(Math.random() * StoryCompletedPerSpt.length);
+                        newRandomSelection = newRandomSelection + StoryCompletedPerSpt[randomSelection];
+                    }
+                    newStoryCompletedPerSprint[i] = newRandomSelection / 5;
+                }
+                sumSP = newStoryPointsPerSpt.reduce(function(a, b) {
+                    return a + b;
+                }, 0);
+                sumASP = newStoryCompletedPerSprint.reduce(function(a, b) {
+                    return a + b;
+                }, 0);
+                scope.futureSP = Math.floor(sumSP / 1000);
+                scope.futureASP = Math.floor(sumASP / 1000);
+                scope.efficiency = Math.floor((scope.futureASP / scope.futureSP) * 100);
+                StoryCompletedPerSpt[StoryCompletedPerSpt.length] = scope.futureASP;
+                StoryPointsPerSpt[StoryPointsPerSpt.length] = scope.futureSP;
+                var sumSP1 = newStoryPointsPerSpt.reduce(function(a, b) {
+                    return a + b;
+                }, 0);
+                var sumASP1 = newStoryCompletedPerSprint.reduce(function(a, b) {
+                    return a + b;
+                }, 0);
+                scope.futureSP1 = Math.floor(sumSP1 / 1000);
+                scope.futureASP1 = Math.floor(sumASP1 / 1000);
+                scope.efficiency1 = Math.floor((scope.futureASP / scope.futureSP) * 100);
+                scope.effortPerStoryPoint = plannedStoryPoints / totalCapacity;
+                var futurePlannedStoryPoint = Math.floor(scope.capacity * scope.effortPerStoryPoint);
+                scope.futureSP = futurePlannedStoryPoint;
+                var efficiency = completedStoryPoints / plannedStoryPoints;
+                scope.futureASP = Math.floor(scope.futureSP * efficiency);
+                scope.efficiency = Math.floor(efficiency * 100);
+                scope.effortPerStoryPoint1 = (plannedStoryPoints + scope.futureSP) / (totalCapacity + parseFloat(averageCapacity));
+                var futurePlannedStoryPoint1 = Math.floor(parseFloat(scope.capacity1) * parseFloat(scope.effortPerStoryPoint1));
+                scope.futureSP1 = futurePlannedStoryPoint1;
+                scope.futureASP1 = Math.floor(scope.futureSP1 * scope.efficiency1 / 100);
+                /*---------------------------------------------------------*/
+                var plotband = [];
+                if (!scope.nextEnabled) {
+                    catagories.push("Next Sprint 01");
+                    catagories.push("Next Sprint 02");
+                    plotband = [{
+                        from: 4.5,
+                        to: 5.5,
+                        color: 'lightgray'
+                    }];
+                    chartDataCommitted.push(futurePlannedStoryPoint);
+                    chartDataCompleted.push(scope.futureASP);
+                    apiDataGetterSetter.setData("nextSprintCompletedSP", scope.futureASP);
+                    //--------For Defect.js Futrue Sprint Bug Prediction--------
+                    chartDataEffort.push(null);
+                    chartDataCapacity.push(Math.floor(scope.capacity));
+                    chartDataDefects.push(null);
+                    chartDataCommitted.push(futurePlannedStoryPoint1);
+                    chartDataCompleted.push(scope.futureASP1);
+                    chartDataEffort.push(null);
+                    chartDataCapacity.push(Math.floor(scope.capacity1));
+                    chartDataDefects.push(null);
+                }
+                var sprintProgressSeries = [{
+                    name: 'Committed',
+                    type: 'column',
+                    yAxis: 1,
+                    data: chartDataCommitted,
+                    tooltip: {
+                        valueSuffix: ''
+                    },
+                    dataLabels: {
+                        enabled: true,
+                        formatter: function() {
+                            if (this.y === 0) {
+                                return '';
+                            } else {
+                                return Math.round(this.y);
+                            }
+                        }
+                    }
+                }, {
+                    name: 'Completed',
+                    type: 'column',
+                    yAxis: 1,
+                    data: chartDataCompleted,
+                    tooltip: {
+                        valueSuffix: ''
+                    },
+                    dataLabels: {
+                        enabled: true,
+                        formatter: function() {
+                            if (this.y === 0) {
+                                return '';
+                            } else {
+                                return Math.round(this.y);
+                            }
+                        }
+                    }
+                }, {
+                    name: 'Defects',
+                    type: 'column',
+                    yAxis: 1,
+                    data: chartDataDefects,
+                    tooltip: {
+                        valueSuffix: ''
+                    },
+                    dataLabels: {
+                        enabled: true,
+                        formatter: function() {
+                            if (this.y === 0) {
+                                return '';
+                            } else {
+                                return Math.round(this.y);
+                            }
+                        }
+                    }
+                }, {
+                    name: 'Capacity',
+                    type: 'spline',
+                    yAxis: 0,
+                    data: chartDataCapacity,
+                    marker: {
+                        enabled: true
+                    },
+                    tooltip: {
+                        valueSuffix: ''
+                    }
+                }, {
+                    name: 'Effort',
+                    type: 'spline',
+                    yAxis: 0,
+                    data: chartDataEffort,
+                    marker: {
+                        enabled: true
+                    },
+                    tooltip: {
+                        valueSuffix: ''
+                    }
+                }];
+                commonCharts.drawSprintProgressChart(sprintProgressSeries, catagories, plotband);
+            }
 
-	}
+            function getRiskReportData() {
+                var result = scope.currentSprintData;
+                var tasksData = setCurrentSprintDate(result);
+                scope.assigneeWiseTasksData = core.groupBy(tasksData, "assginedTo");
+                var riskReportData = core.getRemainingTimeToCompleteTasks(tasksData, scope.assigneeWiseTasksData, scope.sprintEndTime, scope.currentSprintEndDate);
+                scope.riskReportTimeInfo = riskReportData.timeRemainingForAssigneeInfo;
+                scope.sprintLevelRiskFactor = riskReportData.sprintLevelRiskFactor;
+                scope.riskReportData = scope.riskReportTimeInfo;
+            }
+            scope.getTasksForAssignee = function(assignee) {
+                core.setTasks(scope.assigneeWiseTasksData[assignee]);
+                modalCloseFactory.trigger('app/dashboard/views/taskRiskPopUp.html', 'taskRiskPopUpController');
+            };
 
-	@SuppressWarnings("unchecked")
-	@RequestMapping(value = "/almLastData", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<ALMProject> findLastData(@RequestParam("proName") String[] proName, HttpSession httpSession) {
-		String sessionUI = proName[1];
-		String almType = getAlmType(proName[0]);
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			return almService.searchLastData(almType, proName[0]);
-		} else {
-			LOG.info("No datas are found in db for project  " + proName[0]);
-			return null;
-		}
+            function populateTaskRiskDataInFormat(riskReportData) {
+                scope.riskReportTimeInfo = riskReportData.timeRemainingForAssigneeInfo;
+                scope.sprintLevelRiskFactor = riskReportData.sprintLevelRiskFactor;
+                scope.riskReportData = scope.riskReportTimeInfo;
+            }
 
-	}
+            function setCurrentSprintDate(result) {
+                scope.currentSprintEndDate = new Date(result.endDate);
+                commonFunction.currentSprintStartDate = new Date(result.startDate);
+                commonFunction.currentSprintEndDate = new Date(result.endDate);
+                scope.sprintEndTime = core.getSprintEndTime(new Date(scope.currentSprintEndDate), new Date());
+                var tasksData = getOnlyTasksBugsData(result);
+                return tasksData;
+            }
 
-	@RequestMapping(value = "/getHomepage", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<List<String>> getHomePageData(@RequestParam("proName") String[] proName,
-			HttpSession httpSession) {
-		String sessionUI = proName[1];
-		String almType = getAlmType(proName[0]);
+            function getOnlyTasksBugsData(result) {
+                var tasksData = _.filter(result.metrics, function(element) {
+                    return (scope.almConfig.taskName.indexOf(element.nameALMProperty) > -1) || element.nameALMProperty === scope.almConfig.defectName;
+                });
 
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			return almService.getHomepageData(almType, proName[0]);
-		} else {
-			LOG.info("No datas are found in db for project  " + proName[0]);
-			return null;
-		}
+                return tasksData;
+            }
 
-	}
+            function getTfsTaskRisk(data) {
+                var currentSprintData = _.filter(data, function(e) {
+                    return e.iteration[0].iterationName === scope.currentSprint;
+                });
+                var taskData = [currentSprintData[0].iteration[0], currentSprintData[currentSprintData.length - 1].iteration[0]];
+                var tasksData = setCurrentSprintDate(taskData[1]);
+                var tasksBugs = getOnlyTasksBugsData(taskData[0])
+                scope.assigneeWiseTasksData = core.groupBy(tasksBugs, "assginedTo");
+                var riskReportData = core.getTaskRiskTfs(scope.assigneeWiseTasksData, core.groupBy(tasksData, "assginedTo"), scope.sprintEndTime, scope.currentSprintEndDate)
+                populateTaskRiskDataInFormat(riskReportData);
 
-	@RequestMapping(value = "/almtfs", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<Iterable<ALMProject>> buildData(@RequestParam("proName") String[] proName,
-			HttpSession httpSession) {
+            }
+            scope.getColor = function(status) {
+                var statusStyle = {};
+                switch (status) {
+                    case "green":
+                        statusStyle.color = "#8cc63f";
+                        break;
+                    case "amber":
+                        statusStyle.color = "#f7931e";
+                        break;
+                    case "red":
+                        statusStyle.color = "#ed1c24";
+                        break;
+                }
+                return statusStyle;
+            };
+            scope.getClassIcon = function(status) {
+                var statusStyle = {};
+                switch (status) {
+                    case "green":
+                    case "amber":
+                        statusStyle = "glyphicon glyphicon-record";
+                        break;
+                    case "red":
+                        statusStyle = "glyphicon glyphicon-exclamation-sign";
+                        break;
+                }
+                return statusStyle;
+            };
+            scope.updateSprintData = function() {
+                lineChartCategories = [];
+                lineChartAverageCycleTimeData = [];
+                lineChartAverageWaitTimeData = [];
+                StoryCompletedPerSpt = [];
+                StoryPointsPerSpt = [];
+                completedTasksTotalCycleTime = 0;
+                completedTasksTotalLeadTime = 0;
+                completedTasksTotalWaitTime = 0;
+                allDefects = [];
+                chartDataBurnDownRemaining = [];
+                chartDataBurnDownSpent = [];
+                chartIdeal = [];
+                remainingPrediction = [];
+                original = 0;
+                chartDataCommitted = [];
+                chartDataCompleted = [];
+                chartDataEffort = [];
+                chartDataDefects = [];
+                chartDataCapacity = [];
+                catagories = [];
+                currenSprintPlannedSP = 0;
+                currentSprintCompletedSP = 0;
+                productBackLogFlag = false;
+                scope.baseline = false;
+                scope.temporary = 0;
+                processResponse(scope.response);
+            };
 
-		String sessionUI = proName[1];
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			return almService.search("TFS", proName[0]);
-		} else {
-			LOG.info("No datas are found in db for project  " + proName[0]);
-			return null;
-		}
+            function processResponse(response) {
+                scope.multipleSprintFlag = false;
+                scope.sprints = [];
+                var completeData = response.data.result;
+                scope.startCount = -1;
+                scope.endCount = -1;
+                scope.previousEnabled = true;
+                scope.nextEnabled = false;
+                var lastRecord = completeData[completeData.length - 1];
+                _.each(lastRecord.iteration, function(element) {
+                    scope.sprints.push(element.iterationName.toString());
+                });
+                if (scope.sprints.length > 1) {
+                    scope.multipleSprintFlag = true;
+                }
+                if (angular.isUndefined(scope.currentSprint) || scope.currentSprint === 'undefined') {
+                    scope.currentSprint = scope.sprints[0].toString();
+                }
+                if (!retrievedAlmDataObject) {
+                    almData.almLastRecord(almdataparams).then(function(response) {
+                        var almData = [];
+                        _.each(response.data.result, function(element) {
+                            var sprintData = JSON.parse(element);
+                            if (sprintData.startDate !== 0 || sprintData.iterationName === 'BackLog') {
+                                almData.push(sprintData);
+                            }
+                        });
+                        apiDataGetterSetter.setData('almLastData' + name, JSON.stringify(almData));
+                        scope.almData = _.filter(almData, function(element) {
+                            return element.iterationName !== 'BackLog';
+                        });
+                        scope.currentSprintData = _.filter(scope.almData, function(element) {
+                            return element.iterationName === scope.currentSprint;
+                        })[0];
+                        processData();
+                        if (completeData[0].almType == "TFS") {
+                            getTfsTaskRisk(completeData)
+                        } else {
+                            getRiskReportData();
+                        }
+                        getDataForSprintWiseTimeTrend(scope.dataForPopulation);
+                        getTaskProgress(scope.dataForPopulation);
+                    });
+                } else {
+                    scope.almData = JSON.parse(retrievedAlmDataObject);
+                    scope.almData = _.filter(scope.almData, function(element) {
+                        return element.iterationName !== 'BackLog' && element.startDate !== 0;
+                    });
+                    scope.currentSprintData = _.filter(scope.almData, function(element) {
+                        return element.iterationName === scope.currentSprint;
+                    })[0];
+                    processData();
+                    if (completeData[0].almType == "TFS") {
+                        getTfsTaskRisk(completeData)
+                    } else {
+                        getRiskReportData();
+                    }
+                    getDataForSprintWiseTimeTrend(scope.dataForPopulation);
+                    getTaskProgress(scope.dataForPopulation);
+                }
+                generateBurndown(completeData);
+            }
 
-	}
+            function processData() {
+                scope.dataForPopulation = scope.almData;
+                var tasksPartOfCurrentSprint = getMissingTasksInCurrentSprint(scope.dataForPopulation, scope.currentSprintData.iterationName);
+                if (scope.almData.length !== 1) {
+                    Array.prototype.push.apply(scope.currentSprintData.metrics, tasksPartOfCurrentSprint);
+                }
+                populateData(scope.almData, true, false);
+            }
 
-	@RequestMapping(value = "/almjira", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<Iterable<ALMProject>> almData(@RequestParam("proName") String[] proName,
-			HttpSession httpSession) {
+            function generateBurndown(data) {
+                var currentSprintData;
 
-		String sessionUI = proName[1];
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			return almService.search("JIRA", proName[0]);
-		} else {
-			LOG.info("No datas are found in db for project  " + proName[0]);
-			return null;
-		}
+                if (scope.almConfig.taskName[0] === 'Story') {
+                    _.each(data, function(element, index) {
+                        var totalRemaining = 0,
+                            totalSpent = 0;
+                        currentSprintData = _.filter(element.iteration, function(e) {
+                            return e.iterationName === scope.currentSprint;
+                        })[0];
+                        if (!angular.isUndefined(currentSprintData)) {
+                            _.each(currentSprintData.metrics, function(element1) {
+                                if (scope.almConfig.taskName.indexOf(element1.nameALMProperty) > -1 && scope.almConfig.closeState.indexOf(element1.state) > -1) {
+                                    totalRemaining += element1.storyPoints;
+                                }
+                            });
+                            totalRemaining = Math.floor(totalRemaining);
+                            if (index === 0) {
+                                chartDataBurnDownRemaining.push([element.timestamp, totalRemaining]);
+                                chartIdeal.push([element.timestamp, totalRemaining]);
+                            } else {
+                                chartDataBurnDownRemaining.push([element.timestamp, totalRemaining]);
+                            };
+                        }
+                    });
+                    chartIdeal.push([currentSprintData.endDate, 0]);
+                    var seriesBurnDown = [{
+                        name: 'Ideal Line',
+                        data: chartIdeal
+                    }, {
+                        name: 'Time Remaining',
+                        data: chartDataBurnDownRemaining
+                    }];
+                    commonCharts.drawBurndownChart(seriesBurnDown, false);
+                } else if (productBackLogFlag) {
+                    _.each(data, function(element, index) {
+                        var totalRemaining = 0,
+                            totalSpent = 0;
+                        currentSprintData = _.filter(element.iteration, function(e) {
+                            return e.iterationName === scope.currentSprint;
+                        })[0];
+                        if (!angular.isUndefined(currentSprintData)) {
+                            _.each(currentSprintData.metrics, function(element1) {
+                                if ((scope.almConfig.taskName.indexOf(element1.nameALMProperty) > -1) && (element1.remainingWork !== undefined)) {
+                                    totalRemaining += element1.remainingWork;
+                                }
+                            });
+                            totalRemaining = Math.floor(totalRemaining / 3600);
+                            if (index === 0) {
+                                chartDataBurnDownRemaining.push([element.timestamp, totalRemaining]);
+                                chartIdeal.push([element.timestamp, totalRemaining]);
+                            } else {
+                                chartDataBurnDownRemaining.push([element.timestamp, totalRemaining]);
+                            };
+                        }
+                    });
+                    chartIdeal.push([currentSprintData.endDate, 0]);
+                    var seriesBurnDown = [{
+                        name: 'Ideal Line',
+                        data: chartIdeal
+                    }, {
+                        name: 'Time Remaining',
+                        data: chartDataBurnDownRemaining
+                    }];
+                    commonCharts.drawBurndownChart(seriesBurnDown, true);
+                } else {
+                    var count = 0;
+                    _.each(data, function(element, index) {
+                        var totalRemaining = 0,
+                            totalSpent = 0;
+                        currentSprintData = _.filter(element.iteration, function(e) {
+                            return e.iterationName === scope.currentSprint;
+                        })[0];
+                        if (!angular.isUndefined(currentSprintData)) {
+                            count++;
+                            _.each(currentSprintData.metrics, function(element1) {
+                                if ((scope.almConfig.taskName.indexOf(element1.nameALMProperty) > -1) && (element1.remainingWork !== undefined && element1.originalEstimation !== undefined)) {
+                                    totalRemaining += element1.remainingWork;
+                                    if (element1.effort != null) {
+                                        totalSpent += element1.effort;
+                                    }
+                                    original += element1.originalEstimation;
+                                }
+                            });
+                            totalRemaining = Math.floor(totalRemaining / 3600);
+                            original = original / 3600;
+                            totalSpent = Math.floor(totalSpent / 3600);
+                            if (count === 1) {
+                                chartDataBurnDownRemaining.push([element.timestamp, original]);
+                                chartDataBurnDownSpent.push([element.timestamp, 0]);
+                                chartIdeal.push([element.timestamp, original]);
+                            } else {
+                                chartDataBurnDownRemaining.push([element.timestamp, totalRemaining]);
+                                chartDataBurnDownSpent.push([element.timestamp, totalSpent]);
+                            };
+                        }
 
-	}
+                    });
+                    chartIdeal.push([currentSprintData.endDate, 0]);
+                    var effortSpent = chartDataBurnDownSpent[chartDataBurnDownSpent.length - 1][1];
+                    var effortRemaining = chartDataBurnDownRemaining[chartDataBurnDownRemaining.length - 1][1];
+                    var lastDay = moment(chartDataBurnDownSpent[chartDataBurnDownSpent.length - 1][0]);
+                    if (effortSpent > 0) {
+                        var daysSpent = core.getDateDifference(moment(min), lastDay) - 1;
+                        var average = effortSpent / daysSpent;
+                        var noOfDaysRequired = Math.floor(effortRemaining / average);
+                        var finishDate = moment(new Date()).add(noOfDaysRequired, 'day');
+                        var noOfDaysRequiredWithoutWeekend = Math.floor(core.getDateDifference(moment(new Date()), finishDate));
+                        var diff = noOfDaysRequired - noOfDaysRequiredWithoutWeekend;
+                        finishDate = Math.floor(moment(new Date()).add(noOfDaysRequired + diff, 'day'));
+                        remainingPrediction.push([chartDataBurnDownRemaining[chartDataBurnDownRemaining.length - 1][0], chartDataBurnDownRemaining[chartDataBurnDownRemaining.length - 1][1]]);
+                        remainingPrediction.push([finishDate, 0]);
+                        $('.box').matchHeight();
+                    }
+                    var seriesBurnDown = [{
+                        name: 'Ideal Line',
+                        data: chartIdeal
+                    }, {
+                        name: 'Time Remaining',
+                        data: chartDataBurnDownRemaining
+                    }, {
+                        name: 'Time Spent',
+                        data: chartDataBurnDownSpent
+                    }, {
+                        name: 'Prediction',
+                        dashStyle: 'dash',
+                        color: 'red',
+                        data: remainingPrediction,
+                        marker: {
+                            enabled: false
+                        }
+                    }];
+                    commonCharts.drawBurndownChart(seriesBurnDown, true);
+                }
+            }
 
-	@RequestMapping(value = "/almjiradate", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<Iterable<ALMProject>> almData(@RequestParam("proName") String[] proName,
-			@RequestParam("sDate") long sDate, @RequestParam("eDate") long eDate, @RequestParam("flag") boolean flag) {
-		return almService.search("JIRA", proName[0], sDate, eDate, flag);
-	}
+            function arrageArray(originalArray, stateArray, newArray) {
+                _.each(stateArray, function(element) {
+                    var arrayTobeInserted = _.filter(originalArray, function(o) {
+                        return o.name === element;
+                    });
+                    if (arrayTobeInserted.length > 0) {
+                        newArray.push(arrayTobeInserted[0]);
+                    }
+                });
+            }
 
-	@RequestMapping(value = "/almJiraSprintData", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<List<ALMProject>> almData(@RequestParam("proName") String[] proName,
-			@RequestParam("sDate") long sDate, @RequestParam("eDate") long eDate, @RequestParam("flag") boolean flag,
-			HttpSession httpSession) {
-		String sessionUI = proName[1];
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			String almType = getAlmType(proName[0]);
-			return almService.searchCurrentSprint(almType, proName[0], sDate, eDate, flag);
-		} else {
+            function getCurrentSprintStatesInfo(currentSprint) {
+                scope.taskProgressData = _.filter(currentSprint.metrics, function(o) {
+                    return (scope.almConfig.taskName.indexOf(o.nameALMProperty) > -1);
+                });
+                scope.taskStates = scope.taskProgressData[0].stateSet;
+                scope.currentSprintSummary = core.groupByCountElements(scope.taskProgressData, 'state');
+                scope.currentSprintStates = [];
+                arrageArray(scope.currentSprintSummary, scope.taskStates, scope.currentSprintStates);
+            }
 
-			return null;
-		}
-	}
+            function createStyleObjectForSprintStates() {
+                _.each(scope.currentSprintStates, function(element, index) {
+                    var value = (element.count / scope.currentSprintTotalTasks) * 100;
+                    var percentage = Math.round(value * 100) / 100;
+                    scope['style' + index] = {
+                        width: percentage + "%"
+                    };
+                    scope['color' + index] = {
+                        background: core.getColor(scope.taskStates.indexOf(element.name)),
+                        color: "white",
+                        'text-align': "center"
+                    };
+                });
+            }
 
-	@RequestMapping(value = "/almKanbanData", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<List<String>> almKanbanData(@RequestParam("proName") String[] proName,
-			HttpSession httpSession) {
+            function calculateAverageTimeForCompletedTasks() {
+                if (angular.isUndefined(scope.taskStates)) {
+                    scope.completedTasks = _.filter(scope.taskProgressData, function(element) {
+                        return element.state === 'Done';
+                    });
+                } else {
+                    scope.completedTasks = _.filter(scope.taskProgressData, function(element) {
+                        return element.state === scope.taskStates[scope.taskStates.length - 1];
+                    });
+                }
+                _.each(scope.completedTasks, function(element) {
+                    completedTasksTotalCycleTime = completedTasksTotalCycleTime + (element.cycleTime);
+                    if (element.taskDetailsList) {
+                        _.each(element.taskDetailsList, function(task, index) {
+                            if (index === 0) {
+                                completedTasksTotalWaitTime = completedTasksTotalWaitTime + task.previousStateWaitTime;
+                                completedTasksTotalWaitTime = completedTasksTotalWaitTime + task.waitTime;
+                            }
+                            if (index > 0 && index !== element.taskDetailsList.length - 1) {
+                                completedTasksTotalWaitTime = completedTasksTotalWaitTime + task.waitTime;
+                            }
+                        });
+                    } else {
+                        completedTasksTotalWaitTime = completedTasksTotalWaitTime + element.waitTime;
+                    }
+                });
+                scope.totalTasks = scope.completedTasks.length;
+                scope.averageLeadTime = completedTasksTotalLeadTime / scope.totalTasks;
+                scope.currentSprintTimeInfo = [{
+                    data: 'leadTime',
+                    avgTime: Math.round(scope.averageLeadTime)
+                }, {
+                    data: 'cycleTime',
+                    avgTime: Math.round((completedTasksTotalCycleTime * 1000) / scope.totalTasks)
+                }, {
+                    data: 'waitTime',
+                    avgTime: Math.round(completedTasksTotalWaitTime / scope.totalTasks)
+                }];
+            };
 
-		String sessionUI = proName[1];
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
+            function prepareTaskData() {
+                var stateObject;
+                scope.taskData = [];
+                scope.taskData = _.each(scope.taskProgressData, function(element) {
+                    element.states = [];
+                    if (element.hasOwnProperty("taskDetailsList")) {
+                        if (element.taskDetailsList.length === 0) {
+                            stateObject = {
+                                state: element.state,
+                                waitTime: element.waitTime
+                            };
+                            element.states.push(stateObject);
+                        } else {
+                            _.each(element.taskDetailsList, function(task, index) {
+                                if (index === 0) {
+                                    stateObject = {
+                                        state: task.fromState,
+                                        waitTime: task.previousStateWaitTime
+                                    };
+                                    element.states.push(stateObject);
+                                    stateObject = {
+                                        state: task.toState,
+                                        waitTime: task.waitTime
+                                    };
+                                    element.states.push(stateObject);
+                                }
+                                if (index === element.taskDetailsList.length - 1) {
+                                    element.leadTime = task.leadTime;
+                                }
+                                if (index > 0 && index !== element.taskDetailsList.length - 1) {
+                                    stateObject = {
+                                        state: task.toState,
+                                        waitTime: task.waitTime
+                                    };
+                                    element.states.push(stateObject);
+                                }
+                            });
+                        }
+                    } else {
+                        stateObject = {
+                            state: element.state,
+                            waitTime: element.waitTime
+                        };
+                        element.states.push(stateObject);
+                    }
+                });
+            };
+            scope.margeStyleObj = function(objectList) {
+                var obj = {};
+                objectList.forEach(function(x) {
+                    for (var i in x) {
+                        obj[i] = x[i];
+                    }
+                });
+                return obj;
+            };
+            scope.margeStateStyleObj = function(id, index) {
+                var obj = {};
+                var objectList = [];
+                if (index || index === 0) {
+                    objectList.push(scope['stateStyle' + index + id]);
+                } else {
+                    objectList.push(scope['avgStateTimeStyle' + id]);
+                }
+                objectList.forEach(function(x) {
+                    for (var i in x) obj[i] = x[i];
+                });
+                return obj;
+            };
+            var timer = setInterval(function() {
+                scope.sprintEndTime = core.getSprintEndTime(new Date(scope.currentSprintEndDate), new Date());
+                scope.$apply();
+            }, 1000 * 30);
 
-			return almService.getHomepageData("JIRA-KANBAN", proName[0]);
-		} else {
-			return null;
-		}
+            function getMissingTasksInCurrentSprint(allSprintsData, currentSprintName) {
+                var tasksList = [];
+                _.each(allSprintsData, function(sprint) {
+                    _.each(sprint.metrics, function(entry) {
+                        if (entry.hasOwnProperty("iteration") && entry.iteration.includes(currentSprintName)) {
+                            tasksList.push(entry);
+                        }
+                    });
+                });
+                return tasksList;
+            }
 
-	}
-
-	@RequestMapping(value = "/updateTimeSpent", method = GET, produces = APPLICATION_JSON_VALUE)
-	public long updateWorkLog(@RequestParam("proName") String[] proName, HttpSession httpSession) {
-
-		long status = 200;
-		String sessionUI = proName[3];
-		String jiraId = proName[1];
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			AnnotationConfigApplicationContext ctx = DataConfig.getContext();
-			ConfigurationSettingRep configurationRepo = ctx.getBean(ConfigurationSettingRep.class);
-			ConfigurationSetting configurationColection = configurationRepo.findByProjectName(proName[0]);
-			Set<ConfigurationToolInfoMetric> metric = configurationColection.getMetrics();
-			Iterator iter = metric.iterator();
-			while (iter.hasNext()) {
-				Object configuration1 = iter.next();
-				ConfigurationToolInfoMetric metric1 = (ConfigurationToolInfoMetric) configuration1;
-				if ("Jira".equals(metric1.getToolName()) && metric1.getUrl().toString() != "") {
-
-					String instanceURL = metric1.getUrl() + "/rest/api/2/issue/" + jiraId
-							+ "/worklog?adjustEstimate=auto";
-					String user = metric1.getUserName();
-					String pass = metric1.getPassword();
-					try {
-						almService.updateTimeSpentFromRestApi(instanceURL, user, pass, proName[2]);
-						return status;
-					} catch (Exception e) {
-						status = 400;
-						LOG.info(e);
-					}
-					break;
-
-				}
-
-			}
-		} else {
-			status = 400;
-		}
-		return status;
-
-	}
-
-	@RequestMapping(value = "/getDefectData", method = GET, produces = APPLICATION_JSON_VALUE)
-	public DataResponse<List<String>> getDefectData(@RequestParam("proName") String[] proName,
-			HttpSession httpSession) {
-		String sessionUI = proName[1];
-		String almType = "JIRA DEFECTS";
-
-		if (httpSession.getAttribute(ConstantVariable.KYWRD_UNAME).equals(sessionUI)) {
-			return almService.getHomepageData(almType, proName[0]);
-		} else {
-			LOG.info("No datas are found in db for project  " + proName[0]);
-			return null;
-		}
-	}
-
-	public String getAlmType(String projectName) {
-		String almType = "";
-		AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(DataConfig.class);
-		ConfigurationSettingRep configurationRepo = context.getBean(ConfigurationSettingRep.class);
-		ConfigurationSetting configurationColection = configurationRepo.findByProjectName(projectName);
-		Set<ConfigurationToolInfoMetric> metric = configurationColection.getMetrics();
-		Iterator iter = metric.iterator();
-		while (iter.hasNext()) {
-			Object configuration1 = iter.next();
-			ConfigurationToolInfoMetric metric1 = (ConfigurationToolInfoMetric) configuration1;
-
-			if ("Jira".equals(metric1.getToolName())
-					|| ("Jira Defects".equals(metric1.getToolName()) && metric1.getUrl() == "")) {
-				almType = "JIRA";
-				break;
-			} else if ("TFS ALM".equals(metric1.getToolName())) {
-				almType = "TFS";
-				break;
-			}
-
-		}
-		context.close();
-		return almType;
-
-	}
-}
+            function getTaskProgress(data) {
+                var currentSprint = scope.currentSprintData;
+                getMissingTasksInCurrentSprint(scope.dataForPopulation, currentSprint.iterationName);
+                getCurrentSprintStatesInfo(currentSprint);
+                scope.currentSprintTotalTasks = core.getSumValue(scope.currentSprintStates, "count");
+                createStyleObjectForSprintStates();
+                calculateAverageTimeForCompletedTasks();
+                prepareTaskData();
+                scope.getStateAverageTimeStyleObjects = function(array) {
+                    _.each(array, function(element, index) {
+                        var value = (100 / array.length);
+                        var percentage = Math.round(value * 100) / 100;
+                        scope['avgStateTimeStyle' + index] = {
+                            width: percentage + "%",
+                            background: core.getColorForTime(timeArray.indexOf(element.data)),
+                            color: "white",
+                            'text-align': "center"
+                        };
+                    });
+                };
+                scope.getStateAverageTimeStyleObjects(scope.currentSprintTimeInfo);
+                scope.getStyleObjects = function(id, array) {
+                    scope.sum = core.getSumValue(array, "waitTime");
+                    _.each(array, function(element, index) {
+                        var value = (element.waitTime / scope.sum) * 100;
+                        var percentage = Math.round(value * 100) / 100;
+                        scope['stateStyle' + index + id] = {
+                            width: percentage + "%",
+                            background: core.getColor(scope.taskStates.indexOf(element.state)),
+                            color: "white",
+                            'text-align': "center"
+                        };
+                    });
+                };
+            }
+        }
+    };
+}]);
